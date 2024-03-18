@@ -5091,6 +5091,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
                     .job_queue = &job_queue,
                     .omit_missing_hash_error = true,
                     .allow_missing_paths_field = false,
+                    .use_latest_commit = false,
 
                     .package_root = undefined,
                     .error_bundle = undefined,
@@ -5099,6 +5100,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
                     .actual_hash = undefined,
                     .has_build_zig = true,
                     .oom_flag = false,
+                    .latest_commit = undefined,
 
                     .module = build_mod,
                 };
@@ -6707,6 +6709,7 @@ const usage_fetch =
     \\  --debug-hash                  Print verbose hash information to stdout
     \\  --save                        Add the fetched package to build.zig.zon
     \\  --save=[name]                 Add the fetched package to build.zig.zon as name
+    \\  --resolve-commit              Before saving, replace the name of a Git branch/tag with its commit SHA
     \\
 ;
 
@@ -6722,6 +6725,7 @@ fn cmdFetch(
     var override_global_cache_dir: ?[]const u8 = try EnvVar.ZIG_GLOBAL_CACHE_DIR.get(arena);
     var debug_hash: bool = false;
     var save: union(enum) { no, yes, name: []const u8 } = .no;
+    var resolve_commit: bool = false;
 
     {
         var i: usize = 0;
@@ -6742,6 +6746,8 @@ fn cmdFetch(
                     save = .yes;
                 } else if (mem.startsWith(u8, arg, "--save=")) {
                     save = .{ .name = arg["--save=".len..] };
+                } else if (mem.eql(u8, arg, "--resolve-commit")) {
+                    resolve_commit = true;
                 } else {
                     fatal("unrecognized parameter: '{s}'", .{arg});
                 }
@@ -6752,6 +6758,9 @@ fn cmdFetch(
             }
         }
     }
+
+    if (resolve_commit and save == .no)
+        warn("'--resolve-commit' has no effect unless used with '--save'", .{});
 
     const path_or_url = opt_path_or_url orelse fatal("missing url or path parameter", .{});
 
@@ -6801,6 +6810,7 @@ fn cmdFetch(
         .job_queue = &job_queue,
         .omit_missing_hash_error = true,
         .allow_missing_paths_field = false,
+        .use_latest_commit = resolve_commit,
 
         .package_root = undefined,
         .error_bundle = undefined,
@@ -6809,6 +6819,7 @@ fn cmdFetch(
         .actual_hash = undefined,
         .has_build_zig = false,
         .oom_flag = false,
+        .latest_commit = undefined,
 
         .module = null,
     };
@@ -6865,13 +6876,22 @@ fn cmdFetch(
     var fixups: Ast.Fixups = .{};
     defer fixups.deinit(gpa);
 
+    const saved_path_or_url = if (resolve_commit) blk: {
+        // replace the refspec with the latest commit SHA
+        var uri = try std.Uri.parse(path_or_url);
+        uri.fragment = try std.fmt.allocPrint(arena, "{}", .{
+            std.fmt.fmtSliceHexLower(&fetch.latest_commit.?),
+        });
+        break :blk try std.fmt.allocPrint(arena, "{}", .{uri});
+    } else path_or_url;
+
     const new_node_init = try std.fmt.allocPrint(arena,
         \\.{{
         \\            .url = "{}",
         \\            .hash = "{}",
         \\        }}
     , .{
-        std.zig.fmtEscapes(path_or_url),
+        std.zig.fmtEscapes(saved_path_or_url),
         std.zig.fmtEscapes(&hex_digest),
     });
 
